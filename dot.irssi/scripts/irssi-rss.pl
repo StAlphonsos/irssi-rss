@@ -21,13 +21,22 @@ $VERSION = "0.6";
     url         => 'http://github.com/sndrsmnk/irssi-rss',
 );
 
-my $feedsfile = $ENV{'HOME'} . '/.irssi/irssi-rss/rssfeeder.lst';
-my $feedstmp  = $ENV{'HOME'} . '/.irssi/irssi-rss/';
-my $apafile   = $ENV{'HOME'} . '/.irssi/irssi-rss/apastate.obj';
+my $our_dir   = $ENV{'IRSSI_RSS_DIR'};
+$our_dir    ||= $ENV{'HOME'} . '/.irssi';
+my $feedsfile = "${our_dir}/irssi-rss/rssfeeder.lst";
+my $feedstmp  = "${our_dir}/irssi-rss/";
+my $apafile   = "${our_dir}/irssi-rss/apastate.obj";
 my $checkfreq = 10;
 my $rssobject = {};
 my $statehash = {};
 my $autopubannounce = {};
+
+sub _clean_cdata {
+	my($str) = @_;
+	$str =~ s,^<!\[CDATA\[(.*)\]\]>.*$,$1,;
+	$str =~ s/(^\s+|\s+$)//gs;
+	return $str;
+}
 
 sub _parse_rss {
 	if (open FD, "<$feedsfile") {
@@ -41,6 +50,7 @@ sub _parse_rss {
 				close FI; local $/ = $oldslash;
 
 				delete $$rssobject{lc($feedtag)} if exists $$rssobject{lc($feedtag)};
+				$xml =~ s/\n//gs;
 				while ($xml =~ /<(?:entry|item)[^>]*>(.*?)<\/(?:entry|item)>/isg) {
 					my $item = $1;
 					my ($link, $title);
@@ -64,6 +74,8 @@ sub _parse_rss {
 					}
 
 					if ($link and $title) {
+						$link = _clean_cdata($link);
+						$title = _clean_cdata($title);
 						push @{$$rssobject{lc($feedtag)}}, [ $link, $title ];
 					}
 				}
@@ -198,7 +210,7 @@ sub filterURL {
 	# http://www.nu.nl/news/1095854/10/rss/Actievoerders_verzetten_wijzers_klokken_Domtoren.html
 	# http://www.nu.nl/news/804610/11/rss/CDA_wil_terug_naar_veertigurige_werkweek_(video).html
 	if ($url =~ /www.nu.nl/) {
-		$url =~ s'/rss/.*$'/rss/rss.html';
+		$url =~ s,/rss/.*$,/rss/rss.html,;
 		return $url;
 	}
 
@@ -320,3 +332,15 @@ $$statehash{'timer'} = Irssi::timeout_add($checkfreq * 1000, '_rss_check', '');
 load_apa();
 _rss_init();
 msg("irssi-rss version $VERSION loaded.");
+
+
+##
+# Local variables:
+# mode: perl
+# tab-width: 8
+# perl-indent-level: 8
+# perl-continued-statement-offset: 4
+# indent-tabs-mode: t
+# comment-column: 40
+# End:
+##

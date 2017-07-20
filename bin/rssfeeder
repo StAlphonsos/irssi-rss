@@ -9,14 +9,17 @@ use LWP::UserAgent;
 use Digest::MD5 qw(md5_hex);
 
 ## Config stuff :)
+my $IRSSI_DIR = $ENV{'IRSSI_RSS_DIR'};
+$IRSSI_DIR  ||= $ENV{'HOME'} . '/.irssi';
 my $SERVICE   = "rssfeeder";
-my $PIDFILE   = $ENV{'HOME'} . '/.irssi/irssi-rss/rssfeeder.pid';
-my $FEEDSFILE = $ENV{'HOME'} . '/.irssi/irssi-rss/rssfeeder.lst';
-my $FEEDSTMP  = $ENV{'HOME'} . '/.irssi/irssi-rss/';
+my $PIDFILE   = "${IRSSI_DIR}/irssi-rss/rssfeeder.pid";
+my $FEEDSFILE = "${IRSSI_DIR}/irssi-rss/rssfeeder.lst";
+my $FEEDSTMP  = "${IRSSI_DIR}/irssi-rss/";
 my $DELAY     = 300; # seconds between rss retrieval
+my $USE_TOR   = 1; # default
+my $TIMEOUT   = 600;
 
 ## Internals :)
-my $UA        = LWP::UserAgent->new; $UA->agent('irssi-rss');
 my $NOISY     = 1; # Default to printing stuff on STOUD/STDERR
 $0 = $SERVICE;
 
@@ -25,6 +28,16 @@ if ( ! -d $FEEDSTMP ) {
 }
 
 checkargs();
+
+my $UA        = LWP::UserAgent->new(
+			env_proxy	=> 1,
+			agent		=> 'irssi-rss',
+			timeout		=> $TIMEOUT,
+		);
+unless (!$USE_TOR || $ENV{'http_proxy'} || $ENV{'https_proxy'}) {
+	$UA->proxy([qw(http https)], 'socks://127.0.0.1:9050');
+} 
+
 checkself();
 daemonize();
 opensyslog();
@@ -42,18 +55,25 @@ sub main {
 	if (open (FD, "<$FEEDSFILE")) {
 		while (my $feed = <FD>) {
 			chomp($feed);
-			my ($feedtag, $feedurl) = $feed =~ /^(.+?)\s(.+?)$/;
+			next if $feed =~ /^#/;
 
-			my $filename = $FEEDSTMP . "rssfeeder_" . md5_hex($feedurl);
-			
-			my $result = $UA->mirror($feedurl, $filename);
-		
-			if ($result->code == 200) { 
-				# Everything OK, file saved by $UA->mirror()
+			my ($feedtag, $feedurl) = $feed =~ /^(.+?)\s(.+?)$/;
+			my $suff = md5_hex($feedurl);
+			my $filename = $FEEDSTMP . "rssfeeder_" . $suff;
+			my $result = undef;
+
+			eval {
+				$result = $UA->mirror($feedurl, $filename);
+			};
+			if ($@) {
+				syslog LOG_WARNING, "rss feed $feedtag $suff error: error: $@";
+			} elsif ($result->code == 200) {
+				my $nbytes = (stat($filename))[7];
+				syslog LOG_WARNING, "rss feed $feedtag fetched $nbytes bytes => $suff";
 			} elsif ($result->code == 304) {
-				# Everything OK, just not modified :)
+				syslog LOG_WARNING, "rss feed $feedtag unchanged ($suff)";
 			} else {
-				syslog LOG_WARNING, "rss feed $feedtag on $feedurl returned ".$result->code;
+				syslog LOG_WARNING, "rss feed $feedtag on $feedurl returned ".$result->code." ($suff)";
 			}
 		}
 	} else {
@@ -93,18 +113,23 @@ sub kill_daemon {
 }
 
 sub checkargs {
-
+	my $tormsg = $USE_TOR? " (will proxy through Tor)": "";
 	foreach my $ARG (@ARGV) {
 		if ($ARG =~ /--kill/) {
 			dprint("($$) killing $SERVICE.\n");
 			kill_daemon(); exit;
+		} elsif ($ARG =~ /--no-tor/) {
+			$USE_TOR = 0;
+			$tormsg = "";
+		} elsif ($ARG =~ /--timeout=(\d+)$/) {
+			$TIMEOUT = int($1);
 		} elsif ($ARG =~ /--cron/) {
 			$NOISY = 0; # No more output from this point. only syslog.
 		} elsif ($ARG !~ /--(kill|cron)/) {
 			showhelp(); exit;
 		}
 	}
-	dprint("($$) $SERVICE starting.\n");
+	dprint("($$) $SERVICE starting$tormsg.\n");
 }
 
 sub showhelp {
@@ -114,6 +139,7 @@ sub showhelp {
 	print "($$) usage: $basename [args]\n";
 	print "($$)\n";
 	print "($$) where [args] can be a combination of:\n";
+	print "($$)  --no-tor   : do not proxy through Tor (default)\n";
 	print "($$)  --kill     : Kills a possibly running pptp checker by looking\n";
 	print "($$)               up the pid from $PIDFILE\n";
 	print "($$)  --cron     : Silent operation. Only syslog output\n";
